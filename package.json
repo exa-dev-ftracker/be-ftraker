@@ -1,6 +1,7 @@
 {
   "name": "be-ftracker",
   "version": "2.0.0",
+  "private": true,
   "type": "commonjs",
   "scripts": {
     "dev": "tsx watch src/index.ts",
