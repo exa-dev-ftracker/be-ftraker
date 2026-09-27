@@ -14,37 +14,40 @@ class TransactionService {
         try {
             validate(req.query, getTransactionQuerySchema);
 
-            const { view } = req.query as any;
+            const { view = "All", type, category, search } = req.query as any;
             const user = req.user!;
-            const { lastPeriode, currentPeriode } = useSelectedViewPeriode(view);
 
-            if (view === "All") {
-                const all = await TransactionModel
-                    .find({ user: user.id_user })
-                    .sort({ createdAt: -1 });
+            const filter: Record<string, any> = { user: user.id_user };
 
-                return res.status(200).json(SuccessResponse({
-                    current: all,
-                    last: []
-                }, "All transactions retrieved successfully", 200));
+            if (type) {
+                filter.type = new RegExp(`^${type}$`, "i");
             }
 
-            const current = await TransactionModel
-                .find({ user: user.id_user })
-                .gte("createdAt", currentPeriode().start)
-                .lte("createdAt", currentPeriode().end)
+            if (category) {
+                filter.category = category;
+            }
+
+            if (search) {
+                filter.description = { $regex: search, $options: "i" };
+            }
+
+            if (view !== "All") {
+                const { currentPeriode } = useSelectedViewPeriode(view);
+                const period = currentPeriode();
+                if (period.start && period.end) {
+                    filter.createdAt = {
+                        $gte: period.start,
+                        $lte: period.end,
+                    };
+                }
+            }
+
+            const transactions = await TransactionModel
+                .find(filter)
+                .populate("category")
                 .sort({ createdAt: -1 });
 
-            const last = await TransactionModel
-                .find({ user: user.id_user })
-                .gte("createdAt", lastPeriode().start)
-                .lte("createdAt", lastPeriode().end)
-                .sort({ createdAt: -1 });
-
-            return res.status(200).json(SuccessResponse({
-                current,
-                last
-            }, "Transactions retrieved successfully", 200));
+            return res.status(200).json(SuccessResponse(transactions, "Transactions retrieved successfully", 200));
 
         } catch (error) {
             logger.error(error);
@@ -62,7 +65,9 @@ class TransactionService {
         const { transactionId } = req.params;
         const user = req.user!;
 
-        const transaction = await TransactionModel.findOne({ _id: transactionId, user: user.id_user });
+        const transaction = await TransactionModel
+            .findOne({ _id: transactionId, user: user.id_user })
+            .populate("category");
 
         if (!transaction) {
             return res.status(404).json(ErrorResponse("Not Found", "Transaction not found", 404));
@@ -74,18 +79,20 @@ class TransactionService {
     static async createTransaction(req: Request, res: Response, session: mongoose.ClientSession) {
         validate(req.body, createTransactionBodySchema);
 
-        const { amount, type, description, createdAt } = req.body;
+        const { amount, type, description, category, createdAt } = req.body;
         const user = req.user!;
 
         const transaction = new TransactionModel({
             user: user.id_user,
             amount,
-            type,
+            type: type.toLowerCase() === "income" ? "Income" : "Expense",
             description,
-            createdAt
+            category: category || null,
+            createdAt: createdAt ? new Date(createdAt) : new Date(),
         });
 
         await transaction.save({ session });
+        await transaction.populate("category");
 
         return res.status(201).json(SuccessResponse(transaction, "Transaction created successfully", 201));
     }
@@ -93,7 +100,7 @@ class TransactionService {
     static async updateTransaction(req: Request, res: Response, session: mongoose.ClientSession) {
         validate(req.body, updateTransactionBodySchema);
 
-        const { amount, type, description, createdAt } = req.body;
+        const { amount, type, description, category, createdAt } = req.body;
         const { transactionId } = req.params;
         const user = req.user!;
 
@@ -103,12 +110,14 @@ class TransactionService {
             return res.status(404).json(ErrorResponse("Not Found", "Transaction not found", 404));
         }
 
-        transaction.amount = amount;
-        transaction.type = type;
-        transaction.description = description;
-        transaction.createdAt = createdAt ? new Date(createdAt) : transaction.createdAt;
+        if (amount !== undefined) transaction.amount = amount;
+        if (type !== undefined) transaction.type = type.toLowerCase() === "income" ? "Income" : "Expense";
+        if (description !== undefined) transaction.description = description;
+        if (category !== undefined) transaction.category = category;
+        if (createdAt !== undefined) transaction.createdAt = new Date(createdAt);
 
         await transaction.save({ session });
+        await transaction.populate("category");
 
         return res.status(200).json(SuccessResponse(transaction, "Transaction updated successfully", 200));
     }
@@ -129,18 +138,44 @@ class TransactionService {
         return res.status(200).json(SuccessResponse(null, "Transaction deleted successfully", 200));
     }
 
+    static async getTransactionSummary(req: Request, res: Response) {
+        const user = req.user!;
+        const transactions = await TransactionModel.find({ user: user.id_user });
+
+        let incomeTotal = 0;
+        let expenseTotal = 0;
+
+        for (const t of transactions) {
+            const isIncome = t.type?.toLowerCase() === "income";
+            if (isIncome) {
+                incomeTotal += t.amount;
+            } else {
+                expenseTotal += t.amount;
+            }
+        }
+
+        const balance = incomeTotal - expenseTotal;
+
+        return res.status(200).json(SuccessResponse({
+            incomeTotal,
+            expenseTotal,
+            balance,
+            transactionCount: transactions.length,
+        }, "Transaction summary retrieved successfully", 200));
+    }
+
     static async handleN8nWebhook(req: Request, res: Response, session: mongoose.ClientSession) {
         try {
-            // Validate webhook data against schema
             validate(req.body, n8nWebhookBodySchema);
 
-            const { amount, type, description, createdAt, user, } = req.body;
+            const { amount, type, description, category, createdAt, user } = req.body;
 
             const transaction = new TransactionModel({
                 user,
                 amount,
                 type,
                 description,
+                category: category || null,
                 createdAt: createdAt ? new Date(createdAt) : new Date(),
             });
 

@@ -1,43 +1,13 @@
 import zod from "zod";
 
 export const createTransactionBodySchema = zod.object({
-    amount: zod.number().min(1000, "Amount must be a positive number"),
-    type: zod.enum(["Income", "Expanse"], "Type must be either 'income' or 'expense'"),
-    description: zod.string().min(3, "Description is required"),
-    createdAt: zod.string().optional().refine((date) => {
-        if (date) {
-            const parsedDate = new Date(date);
-            return !isNaN(parsedDate.getDate());
-        }
-        return true; // If createdAt is not provided, it's valid
-    }, {
-        message: "Invalid date format for createdAt",
-    }),
-})
-
-export const updateTransactionBodySchema = zod.object({
-    amount: zod.number().min(1000, "Amount must be a positive number"),
-    type: zod.enum(["Income", "Expanse"], "Type must be either 'income' or 'expense'"),
-    description: zod.string().min(3, "Description is required"),
-    createdAt: zod.string().optional().refine((date) => {
-        if (date) {
-            const parsedDate = new Date(date);
-            return !isNaN(parsedDate.getDate());
-        }
-        return true; // If createdAt is not provided, it's valid
-    }, {
-        message: "Invalid date format for createdAt",
-    }),
-})
-
-export const getTransactionQuerySchema = zod.object({
-    view: zod.enum(["Day", "Month", "Year", "Week", "All"], "View must be either 'day', 'month', 'year', 'All', or 'week'"),
-})
-
-export const n8nWebhookBodySchema = zod.object({
     amount: zod.number().min(1, "Amount must be a positive number"),
-    type: zod.enum(["Income", "Expanse"], "Type must be either 'income' or 'expense'"),
+    type: zod.string().refine(
+        (val) => ["income", "expense", "Income", "Expense", "Expanse"].includes(val),
+        { message: "Type must be either 'income' or 'expense'" }
+    ),
     description: zod.string().min(1, "Description is required"),
+    category: zod.string().optional(),
     createdAt: zod.string().optional().refine((date) => {
         if (date) {
             const parsedDate = new Date(date);
@@ -47,7 +17,39 @@ export const n8nWebhookBodySchema = zod.object({
     }, {
         message: "Invalid date format for createdAt",
     }),
+});
+
+export const updateTransactionBodySchema = zod.object({
+    amount: zod.number().min(1, "Amount must be a positive number").optional(),
+    type: zod.string().refine(
+        (val) => ["income", "expense", "Income", "Expense", "Expanse"].includes(val),
+        { message: "Type must be either 'income' or 'expense'" }
+    ).optional(),
+    description: zod.string().min(1, "Description is required").optional(),
+    category: zod.string().optional(),
+    createdAt: zod.string().optional().refine((date) => {
+        if (date) {
+            const parsedDate = new Date(date);
+            return !isNaN(parsedDate.getDate());
+        }
+        return true;
+    }, {
+        message: "Invalid date format for createdAt",
+    }),
+});
+
+export const getTransactionQuerySchema = zod.object({
+    view: zod.string().optional(),
+    type: zod.string().optional(),
+    category: zod.string().optional(),
+    search: zod.string().optional(),
+});
+
+export const n8nWebhookBodySchema = zod.object({
+    amount: zod.number().min(1, "Amount must be a positive number"),
+    type: zod.string(),
+    description: zod.string().min(1, "Description is required"),
+    category: zod.string().optional(),
+    createdAt: zod.string().optional(),
     user: zod.string().regex(/^[0-9a-f]{24}$/, "Invalid MongoDB ObjectId"),
-})
-
-
+});

@@ -1,0 +1,15 @@
+import { z } from "zod";
+
+export const createCategorySchema = z.object({
+    name: z.string().min(1, "Nama kategori tidak boleh kosong"),
+    type: z.enum(["income", "expense"]).nullable().optional(),
+    color: z.string().optional(),
+    icon: z.string().optional(),
+});
+
+export const updateCategorySchema = z.object({
+    name: z.string().min(1).optional(),
+    type: z.enum(["income", "expense"]).nullable().optional(),
+    color: z.string().optional(),
+    icon: z.string().optional(),
+});

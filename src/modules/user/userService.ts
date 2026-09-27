@@ -12,6 +12,8 @@ import Config from "../../config";
 import {ResponseAuth} from "../../types/user";
 import mongoose from "mongoose";
 import tokenModel from "../token/tokenModel";
+import TransactionModel from "../transaction/transactionModel";
+import CategoryModel from "../category/categoryModel";
 import getClientRedis from "../../databases/redis";
 
 class UserService {
@@ -27,7 +29,7 @@ class UserService {
             return res.status(500).json(ErrorResponse("Redis connection error", null, 500));
         }
 
-        if (!user || !(await comparePassword(password, user.password))) {
+        if (!user || !user.password || !(await comparePassword(password, user.password))) {
             return res.status(400).json(ErrorResponse("Email or Password is wrong", null, 400));
         }
 
@@ -321,6 +323,90 @@ class UserService {
                 200
             )
         );
+    }
+
+    static async getProfile(req: Request, res: Response) {
+        const userPayload = req.user!;
+        const user = await UserModel.findById(userPayload.id_user).select("-password -token");
+        if (!user) {
+            return res.status(404).json(ErrorResponse("User not found", null, 404));
+        }
+        return res.status(200).json(SuccessResponse(user, "User profile retrieved successfully", 200));
+    }
+
+    static async getSettings(req: Request, res: Response) {
+        const userPayload = req.user!;
+        const user = await UserModel.findById(userPayload.id_user);
+        if (!user) {
+            return res.status(404).json(ErrorResponse("User not found", null, 404));
+        }
+        return res.status(200).json(SuccessResponse({
+            phone_number: user.phone_number || null,
+            chatbot_enabled: user.chatbot_enabled || false,
+        }, "Settings retrieved successfully", 200));
+    }
+
+    static async updatePhone(req: Request, res: Response, session: mongoose.ClientSession) {
+        const userPayload = req.user!;
+        const { phone_number } = req.body;
+        const user = await UserModel.findById(userPayload.id_user);
+        if (!user) {
+            return res.status(404).json(ErrorResponse("User not found", null, 404));
+        }
+        user.phone_number = phone_number;
+        await user.save({ session });
+        return res.status(200).json(SuccessResponse({
+            phone_number: user.phone_number,
+            chatbot_enabled: user.chatbot_enabled,
+        }, "Phone number updated successfully", 200));
+    }
+
+    static async toggleChatbot(req: Request, res: Response, session: mongoose.ClientSession) {
+        const userPayload = req.user!;
+        const { chatbot_enabled } = req.body;
+        const user = await UserModel.findById(userPayload.id_user);
+        if (!user) {
+            return res.status(404).json(ErrorResponse("User not found", null, 404));
+        }
+        user.chatbot_enabled = Boolean(chatbot_enabled);
+        await user.save({ session });
+        return res.status(200).json(SuccessResponse({
+            phone_number: user.phone_number,
+            chatbot_enabled: user.chatbot_enabled,
+        }, "Chatbot status updated successfully", 200));
+    }
+
+    static async deleteAccount(req: Request, res: Response, session: mongoose.ClientSession) {
+        const userPayload = req.user!;
+        const userId = userPayload.id_user;
+
+        const user = await UserModel.findById(userId);
+        if (!user) {
+            return res.status(404).json(ErrorResponse("User not found", null, 404));
+        }
+
+        // 1. Delete all transactions belonging to this user
+        await TransactionModel.deleteMany({ user: userId }, { session });
+
+        // 2. Delete all categories belonging to this user
+        await CategoryModel.deleteMany({ user: userId }, { session });
+
+        // 3. Invalidate redis tokens and remove from DB
+        const tokens = await tokenModel.find({ id_user: userId });
+        const clientRedis = await getClientRedis();
+        if (clientRedis) {
+            for (const t of tokens) {
+                await clientRedis.del(t.token);
+            }
+        }
+        await tokenModel.deleteMany({ id_user: userId }, { session });
+
+        // 4. Delete user record permanently
+        await UserModel.findByIdAndDelete(userId, { session });
+
+        logger.info(`[Delete Account] User ${user.email} (${userId}) deleted account permanently`);
+
+        return res.status(200).json(SuccessResponse(null, "Account and all associated data deleted successfully", 200));
     }
 }
 

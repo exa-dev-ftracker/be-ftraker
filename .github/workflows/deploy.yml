@@ -1,45 +1,31 @@
-name: Build & Deploy Elysia to VPS via GHCR
+name: Deploy Backend
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+  issues: write
+  pull-requests: write
 
 jobs:
-  build-and-deploy:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Get Commit SHA (short)
-        id: vars
-        run: echo "sha=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
-
-      - name: Log in to GHCR
-        run: echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-
-      - name: Build Docker image
-        run: |
-          docker build -t ghcr.io/${{ github.repository_owner }}/be-ftracker:${{ steps.vars.outputs.sha }} .
-
-      - name: Push Docker image to GHCR
-        run: docker push ghcr.io/${{ github.repository_owner }}/be-ftracker:${{ steps.vars.outputs.sha }}
-
-      - name: Deploy to VPS
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -p 31080 -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
-          
-          ssh -p 31080 -i ~/.ssh/id_ed25519 deploy@${{ secrets.VPS_HOST }} << EOF
-          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-
-          # Patch the deployment to use the new SHA tag
-          kubectl set image deployment/be-ftracker -n dev-coffe \
-            be-ftracker=ghcr.io/${{ github.repository_owner }}/be-ftracker:${{ steps.vars.outputs.sha }}
-
-          # Optional: show rollout
-          # kubectl rollout status deployment/transaction-service-coffe -n dev-coffe
-          EOF
+  deploy:
+    uses: exa31/github-workflows/.github/workflows/backend.yml@v1.0.0
+    with:
+      app_name: be-ftracker
+      namespace: f-tracker
+      image_name: ghcr.io/exa31/be-ftracker
+      docker_context: .
+      dockerfile: Dockerfile
+      ssh_port: 31080
+      kubeconfig: /home/deploy/.kube/config
+      rollout_timeout: 300s
+      push_latest: true
+    secrets:
+      GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+      SSH_KEY: ${{ secrets.SSH_KEY }}
+      VPS_HOST: ${{ secrets.VPS_HOST }}

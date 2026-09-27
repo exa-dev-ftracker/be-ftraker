@@ -4,6 +4,9 @@ import { wrappingDbTransaction } from "../../utils/db";
 
 const router = Router();
 
+// Summary endpoint
+router.get("/transactions/summary", TransactionService.getTransactionSummary);
+
 // GET tanpa transaction → tidak perlu session
 router.get("/transactions", TransactionService.getTransactions);
 
