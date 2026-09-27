@@ -341,9 +341,29 @@ class UserService {
             return res.status(404).json(ErrorResponse("User not found", null, 404));
         }
         return res.status(200).json(SuccessResponse({
+            name: user.name,
+            email: user.email,
             phone_number: user.phone_number || null,
             chatbot_enabled: user.chatbot_enabled || false,
+            timezone: user.timezone || "UTC",
         }, "Settings retrieved successfully", 200));
+    }
+
+    static async updateTimezone(req: Request, res: Response, session: mongoose.ClientSession) {
+        const userPayload = req.user!;
+        const { timezone } = req.body;
+        if (!timezone || typeof timezone !== "string") {
+            return res.status(400).json(ErrorResponse("Bad Request", "Timezone string is required", 400));
+        }
+        const user = await UserModel.findById(userPayload.id_user);
+        if (!user) {
+            return res.status(404).json(ErrorResponse("User not found", null, 404));
+        }
+        user.timezone = timezone;
+        await user.save({ session });
+        return res.status(200).json(SuccessResponse({
+            timezone: user.timezone,
+        }, "Timezone updated successfully", 200));
     }
 
     static async updatePhone(req: Request, res: Response, session: mongoose.ClientSession) {

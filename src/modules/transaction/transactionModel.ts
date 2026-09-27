@@ -7,6 +7,7 @@ export interface Transaction extends Document {
     type: string;
     description: string;
     category?: Schema.Types.ObjectId;
+    date: Date;
     createdAt: Date;
     updatedAt: Date;
 }
@@ -18,7 +19,7 @@ const transactionSchema = new Schema<Transaction>(
         type: { type: String, required: true },
         description: { type: String, required: true },
         category: { type: Schema.ObjectId, ref: "Category" },
-        createdAt: { type: Date, immutable: false },
+        date: { type: Date, default: Date.now },
     },
     { timestamps: true }
 );

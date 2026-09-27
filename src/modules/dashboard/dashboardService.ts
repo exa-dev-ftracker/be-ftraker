@@ -29,17 +29,22 @@ class DashboardService {
 
         const baseQuery: Record<string, any> = { user: user.id_user };
         if (view !== "All" && period.start && period.end) {
-            baseQuery.createdAt = {
-                $gte: period.start,
-                $lte: period.end,
-            };
+            baseQuery.$or = [
+                { date: { $gte: period.start, $lte: period.end } },
+                { date: { $exists: false }, createdAt: { $gte: period.start, $lte: period.end } },
+            ];
         }
 
-        const allTransactions = await TransactionModel
+        const rawTransactions = await TransactionModel
             .find(baseQuery)
-            .sort({ createdAt: -1 })
+            .sort({ date: -1, createdAt: -1 })
             .populate("category")
             .lean();
+
+        const allTransactions = rawTransactions.map((t: any) => ({
+            ...t,
+            date: t.date || t.createdAt,
+        }));
 
         let incomeTotal = 0;
         let expenseTotal = 0;
@@ -58,7 +63,7 @@ class DashboardService {
             } else {
                 expenseTotal += amount;
                 const cat = t.category && typeof t.category === "object" ? (t.category as any) : null;
-                const catName = cat?.name || "Lain-lain";
+                const catName = cat?.name || "Other";
                 if (!expenseCategoryMap[catName]) {
                     expenseCategoryMap[catName] = {
                         name: catName,
@@ -107,17 +112,22 @@ class DashboardService {
 
         const baseQuery: Record<string, any> = { user: user.id_user };
         if (view !== "All" && period.start && period.end) {
-            baseQuery.createdAt = {
-                $gte: period.start,
-                $lte: period.end,
-            };
+            baseQuery.$or = [
+                { date: { $gte: period.start, $lte: period.end } },
+                { date: { $exists: false }, createdAt: { $gte: period.start, $lte: period.end } },
+            ];
         }
 
-        const allTransactions = await TransactionModel
+        const rawTransactions = await TransactionModel
             .find(baseQuery)
-            .sort({ createdAt: -1 })
+            .sort({ date: -1, createdAt: -1 })
             .populate("category")
             .lean();
+
+        const allTransactions = rawTransactions.map((t: any) => ({
+            ...t,
+            date: t.date || t.createdAt,
+        }));
 
         let incomeTotal = 0;
         let expenseTotal = 0;
@@ -141,7 +151,7 @@ class DashboardService {
             }
 
             const cat = t.category && typeof t.category === "object" ? (t.category as any) : null;
-            const catName = cat?.name || "Umum";
+            const catName = cat?.name || "General";
 
             if (isIncome) {
                 incomeTotal += amount;

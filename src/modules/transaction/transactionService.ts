@@ -35,17 +35,23 @@ class TransactionService {
                 const { currentPeriode } = useSelectedViewPeriode(view);
                 const period = currentPeriode();
                 if (period.start && period.end) {
-                    filter.createdAt = {
-                        $gte: period.start,
-                        $lte: period.end,
-                    };
+                    filter.$or = [
+                        { date: { $gte: period.start, $lte: period.end } },
+                        { date: { $exists: false }, createdAt: { $gte: period.start, $lte: period.end } },
+                    ];
                 }
             }
 
-            const transactions = await TransactionModel
+            const rawTransactions = await TransactionModel
                 .find(filter)
                 .populate("category")
-                .sort({ createdAt: -1 });
+                .sort({ date: -1, createdAt: -1 })
+                .lean();
+
+            const transactions = rawTransactions.map((t: any) => ({
+                ...t,
+                date: t.date || t.createdAt,
+            }));
 
             return res.status(200).json(SuccessResponse(transactions, "Transactions retrieved successfully", 200));
 
@@ -67,20 +73,29 @@ class TransactionService {
 
         const transaction = await TransactionModel
             .findOne({ _id: transactionId, user: user.id_user })
-            .populate("category");
+            .populate("category")
+            .lean();
 
         if (!transaction) {
             return res.status(404).json(ErrorResponse("Not Found", "Transaction not found", 404));
         }
 
-        return res.status(200).json(SuccessResponse(transaction, "Transaction retrieved successfully", 200));
+        return res.status(200).json(SuccessResponse({
+            ...transaction,
+            date: (transaction as any).date || (transaction as any).createdAt,
+        }, "Transaction retrieved successfully", 200));
     }
 
     static async createTransaction(req: Request, res: Response, session: mongoose.ClientSession) {
         validate(req.body, createTransactionBodySchema);
 
-        const { amount, type, description, category, createdAt } = req.body;
+        const { amount, type, description, category, date, createdAt } = req.body;
         const user = req.user!;
+
+        // Real transaction date (when the transaction occurred)
+        const transactionDate = date
+            ? new Date(date)
+            : (createdAt ? new Date(createdAt) : new Date());
 
         const transaction = new TransactionModel({
             user: user.id_user,
@@ -88,19 +103,25 @@ class TransactionService {
             type: type.toLowerCase() === "income" ? "Income" : "Expense",
             description,
             category: category || null,
-            createdAt: createdAt ? new Date(createdAt) : new Date(),
+            date: transactionDate,
+            // createdAt is automatically handled by Mongoose timestamps for the true entry time
         });
 
         await transaction.save({ session });
         await transaction.populate("category");
 
-        return res.status(201).json(SuccessResponse(transaction, "Transaction created successfully", 201));
+        const responseData = {
+            ...transaction.toObject(),
+            date: transaction.date || transaction.createdAt,
+        };
+
+        return res.status(201).json(SuccessResponse(responseData, "Transaction created successfully", 201));
     }
 
     static async updateTransaction(req: Request, res: Response, session: mongoose.ClientSession) {
         validate(req.body, updateTransactionBodySchema);
 
-        const { amount, type, description, category, createdAt } = req.body;
+        const { amount, type, description, category, date, createdAt } = req.body;
         const { transactionId } = req.params;
         const user = req.user!;
 
@@ -114,12 +135,18 @@ class TransactionService {
         if (type !== undefined) transaction.type = type.toLowerCase() === "income" ? "Income" : "Expense";
         if (description !== undefined) transaction.description = description;
         if (category !== undefined) transaction.category = category;
-        if (createdAt !== undefined) transaction.createdAt = new Date(createdAt);
+        if (date !== undefined) transaction.date = new Date(date);
+        else if (createdAt !== undefined) transaction.date = new Date(createdAt);
 
         await transaction.save({ session });
         await transaction.populate("category");
 
-        return res.status(200).json(SuccessResponse(transaction, "Transaction updated successfully", 200));
+        const responseData = {
+            ...transaction.toObject(),
+            date: transaction.date || transaction.createdAt,
+        };
+
+        return res.status(200).json(SuccessResponse(responseData, "Transaction updated successfully", 200));
     }
 
     static async deleteTransaction(req: Request, res: Response, session: mongoose.ClientSession) {
@@ -168,7 +195,10 @@ class TransactionService {
         try {
             validate(req.body, n8nWebhookBodySchema);
 
-            const { amount, type, description, category, createdAt, user } = req.body;
+            const { amount, type, description, category, date, createdAt, user } = req.body;
+            const transactionDate = date
+                ? new Date(date)
+                : (createdAt ? new Date(createdAt) : new Date());
 
             const transaction = new TransactionModel({
                 user,
@@ -176,7 +206,7 @@ class TransactionService {
                 type,
                 description,
                 category: category || null,
-                createdAt: createdAt ? new Date(createdAt) : new Date(),
+                date: transactionDate,
             });
 
             await transaction.save({ session });
@@ -186,6 +216,7 @@ class TransactionService {
                 amount,
                 type,
                 description,
+                date: transaction.date,
                 createdAt: transaction.createdAt,
                 user
             });

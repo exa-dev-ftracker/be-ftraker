@@ -6,6 +6,7 @@ const router = Router();
 
 router.get("/user/me", UserService.getProfile);
 router.get("/user/settings", UserService.getSettings);
+router.patch("/user/timezone", wrappingDbTransaction(UserService.updateTimezone));
 router.post("/user/phone", wrappingDbTransaction(UserService.updatePhone));
 router.patch("/user/chatbot", wrappingDbTransaction(UserService.toggleChatbot));
 router.delete("/user/account", wrappingDbTransaction(UserService.deleteAccount));

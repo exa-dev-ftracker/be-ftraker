@@ -8,6 +8,13 @@ export const createTransactionBodySchema = zod.object({
     ),
     description: zod.string().min(1, "Description is required"),
     category: zod.string().optional(),
+    date: zod.string().optional().refine((d) => {
+        if (d) {
+            const parsed = new Date(d);
+            return !isNaN(parsed.getDate());
+        }
+        return true;
+    }, { message: "Invalid date format for transaction date" }),
     createdAt: zod.string().optional().refine((date) => {
         if (date) {
             const parsedDate = new Date(date);
@@ -24,9 +31,16 @@ export const updateTransactionBodySchema = zod.object({
     type: zod.string().refine(
         (val) => ["income", "expense", "Income", "Expense", "Expanse"].includes(val),
         { message: "Type must be either 'income' or 'expense'" }
-    ).optional(),
+    ),
     description: zod.string().min(1, "Description is required").optional(),
     category: zod.string().optional(),
+    date: zod.string().optional().refine((d) => {
+        if (d) {
+            const parsed = new Date(d);
+            return !isNaN(parsed.getDate());
+        }
+        return true;
+    }, { message: "Invalid date format for transaction date" }),
     createdAt: zod.string().optional().refine((date) => {
         if (date) {
             const parsedDate = new Date(date);
@@ -50,6 +64,7 @@ export const n8nWebhookBodySchema = zod.object({
     type: zod.string(),
     description: zod.string().min(1, "Description is required"),
     category: zod.string().optional(),
+    date: zod.string().optional(),
     createdAt: zod.string().optional(),
     user: zod.string().regex(/^[0-9a-f]{24}$/, "Invalid MongoDB ObjectId"),
 });
