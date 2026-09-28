@@ -19,7 +19,12 @@ const transactionSchema = new Schema<Transaction>(
         type: { type: String, required: true },
         description: { type: String, required: true },
         category: { type: Schema.ObjectId, ref: "Category" },
-        date: { type: Date, default: Date.now },
+        date: {
+            type: Date,
+            default: function (this: any) {
+                return this.createdAt || Date.now();
+            },
+        },
     },
     { timestamps: true }
 );

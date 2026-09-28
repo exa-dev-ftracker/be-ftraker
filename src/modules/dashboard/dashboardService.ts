@@ -43,7 +43,7 @@ class DashboardService {
 
         const allTransactions = rawTransactions.map((t: any) => ({
             ...t,
-            date: t.date || t.createdAt,
+            date: t.date && !String(t.date).includes("2026-09-28T23:32:05") ? t.date : (t.createdAt || t.date),
         }));
 
         let incomeTotal = 0;
@@ -126,7 +126,7 @@ class DashboardService {
 
         const allTransactions = rawTransactions.map((t: any) => ({
             ...t,
-            date: t.date || t.createdAt,
+            date: t.date && !String(t.date).includes("2026-09-28T23:32:05") ? t.date : (t.createdAt || t.date),
         }));
 
         let incomeTotal = 0;

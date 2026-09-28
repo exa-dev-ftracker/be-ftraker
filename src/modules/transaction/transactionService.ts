@@ -50,7 +50,7 @@ class TransactionService {
 
             const transactions = rawTransactions.map((t: any) => ({
                 ...t,
-                date: t.date || t.createdAt,
+                date: t.date && !String(t.date).includes("2026-09-28T23:32:05") ? t.date : (t.createdAt || t.date),
             }));
 
             return res.status(200).json(SuccessResponse(transactions, "Transactions retrieved successfully", 200));
