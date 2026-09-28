@@ -8,6 +8,7 @@ const router = Router();
 router.post("/login", wrappingDbTransaction(UserService.login));
 router.post("/register", wrappingDbTransaction(UserService.register));
 router.post("/login-with-google", wrappingDbTransaction(UserService.loginWithGoogle));
+router.post("/login-with-apple", wrappingDbTransaction(UserService.loginWithApple));
 router.post("/logout", wrappingDbTransaction(UserService.logout));
 router.post("/refresh", wrappingDbTransaction(UserService.refreshToken));
 

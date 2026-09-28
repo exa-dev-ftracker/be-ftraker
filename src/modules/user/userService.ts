@@ -2,7 +2,7 @@ import UserModel from "./userModel";
 import {Request, Response} from "express";
 import zod from "zod";
 import {validate} from "../../utils/validation";
-import {loginBodySchema, loginWithGoogleBodySchema, registerBodySchema} from "./userSchema";
+import {loginBodySchema, loginWithAppleBodySchema, loginWithGoogleBodySchema, registerBodySchema} from "./userSchema";
 import logger from "../../utils/logger";
 import {ErrorResponse, SuccessResponse} from "../../utils/response";
 import {comparePassword, encryptPassword} from "../../utils/bcrypt";
@@ -195,6 +195,116 @@ class UserService {
                 {accessToken, refreshToken},
                 "User already exists",
                 200
+            )
+        );
+    }
+
+    static async loginWithApple(req: Request, res: Response, session: mongoose.ClientSession) {
+        validate(req.body, loginWithAppleBodySchema);
+        const { identityToken, userIdentifier, email, name } = req.body;
+
+        if (!identityToken && !userIdentifier) {
+            return res.status(400).json(ErrorResponse("Either identityToken or userIdentifier is required", null, 400));
+        }
+
+        const clientRedis = await getClientRedis();
+        if (!clientRedis) {
+            return res.status(500).json(ErrorResponse("Redis connection error", null, 500));
+        }
+
+        let appleUserId: string | null = userIdentifier || null;
+        let resolvedEmail: string | null = email || null;
+
+        if (identityToken) {
+            const decoded = decodeJwt(identityToken) as any;
+            if (decoded) {
+                if (decoded.sub) appleUserId = decoded.sub;
+                if (decoded.email && !resolvedEmail) resolvedEmail = decoded.email;
+            }
+        }
+
+        if (!appleUserId && !resolvedEmail) {
+            return res.status(400).json(ErrorResponse("Failed to identify Apple user", null, 400));
+        }
+
+        // 1. Try finding user by apple_id
+        let user = appleUserId ? await UserModel.findOne({ apple_id: appleUserId }) : null;
+
+        // 2. If not found by apple_id, try finding by email and auto-link
+        if (!user && resolvedEmail) {
+            user = await UserModel.findOne({ email: resolvedEmail });
+            if (user) {
+                if (appleUserId && !user.apple_id) {
+                    user.apple_id = appleUserId;
+                }
+                if (!user.apple_email) {
+                    user.apple_email = resolvedEmail;
+                }
+                await user.save({ session });
+                logger.info(`Auto-linked Apple ID to existing account: ${user.email}`);
+            }
+        }
+
+        // 3. If still not found, create new account (Sign Up with Apple)
+        let isNewUser = false;
+        if (!user) {
+            isNewUser = true;
+            let formattedName = "Apple User";
+            if (name && typeof name === "string" && name.trim()) {
+                formattedName = name.trim();
+            }
+
+            const fallbackEmail = resolvedEmail || `apple_${(appleUserId || Date.now().toString()).slice(0, 10)}@privaterelay.appleid.com`;
+
+            user = new UserModel({
+                name: formattedName,
+                email: fallbackEmail,
+                password: null,
+                apple_id: appleUserId,
+                apple_email: resolvedEmail,
+            });
+
+            await user.save({ session });
+            logger.info(`Created new user with Apple ID: ${user.email}`);
+        }
+
+        const accessToken = generateJwt({
+            email: user.email,
+            name: user.name,
+            type: "access",
+            id_user: user.id
+        });
+
+        const refreshToken = generateJwt({
+            email: user.email,
+            name: user.name,
+            type: "refresh",
+            id_user: user.id
+        });
+
+        await new tokenModel({
+            token: refreshToken,
+            id_user: user.id,
+            expireAt: new Date(Date.now() + 60 * 60 * 24 * 30 * 1000)
+        }).save({ session });
+
+        res.cookie("refreshToken", refreshToken, {
+            httpOnly: true,
+            secure: true,
+            sameSite: "none",
+            path: "/",
+            expires: new Date(Date.now() + 60 * 60 * 24 * 30 * 1000)
+        });
+
+        await clientRedis.setEx(`refreshToken:${refreshToken}`, 60 * 60 * 24 * 30, refreshToken);
+
+        logger.info(`User ${user.email} logged in with Apple successfully`);
+
+        return res.status(isNewUser ? 201 : 200).json(
+            SuccessResponse<ResponseAuth>(
+                { accessToken, refreshToken },
+                isNewUser ? "User registered with Apple successfully" : "User logged in with Apple successfully",
+                isNewUser ? 201 : 200
             )
         );
     }

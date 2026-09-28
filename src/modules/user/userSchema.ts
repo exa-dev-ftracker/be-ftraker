@@ -14,3 +14,11 @@ export const registerBodySchema = zod.object({
 export const loginWithGoogleBodySchema = zod.object({
     credential: zod.jwt("Invalid JWT format"),
 })
+
+export const loginWithAppleBodySchema = zod.object({
+    identityToken: zod.string().optional(),
+    userIdentifier: zod.string().optional(),
+    email: zod.string().optional().nullable(),
+    name: zod.string().optional().nullable(),
+    code: zod.string().optional().nullable(),
+})
