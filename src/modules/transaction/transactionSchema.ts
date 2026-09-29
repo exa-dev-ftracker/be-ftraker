@@ -57,6 +57,11 @@ export const getTransactionQuerySchema = zod.object({
     type: zod.string().optional(),
     category: zod.string().optional(),
     search: zod.string().optional(),
+    sort: zod.string().optional(),
+    startDate: zod.string().optional(),
+    endDate: zod.string().optional(),
+    year: zod.string().optional(),
+    month: zod.string().optional(),
 });
 
 export const n8nWebhookBodySchema = zod.object({

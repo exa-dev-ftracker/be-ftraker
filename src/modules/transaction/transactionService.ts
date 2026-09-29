@@ -10,42 +10,83 @@ import mongoose from "mongoose";
 
 class TransactionService {
 
+    private static buildFilter(query: any, userId: string): Record<string, any> {
+        const { view = "All", type, category, search, startDate, endDate, year, month } = query;
+        const filter: Record<string, any> = { user: userId };
+
+        if (type && type !== "All") {
+            filter.type = new RegExp(`^${type}$`, "i");
+        }
+
+        if (category && category !== "all") {
+            filter.category = category;
+        }
+
+        if (search && String(search).trim()) {
+            filter.description = { $regex: String(search).trim(), $options: "i" };
+        }
+
+        if (startDate && endDate) {
+            const s = new Date(startDate);
+            s.setHours(0, 0, 0, 0);
+            const e = new Date(endDate);
+            e.setHours(23, 59, 59, 999);
+            filter.$or = [
+                { date: { $gte: s, $lte: e } },
+                { date: { $exists: false }, createdAt: { $gte: s, $lte: e } },
+            ];
+        } else if (year && month) {
+            const y = parseInt(year);
+            const m = parseInt(month) - 1;
+            const s = new Date(y, m, 1, 0, 0, 0, 0);
+            const e = new Date(y, m + 1, 0, 23, 59, 59, 999);
+            filter.$or = [
+                { date: { $gte: s, $lte: e } },
+                { date: { $exists: false }, createdAt: { $gte: s, $lte: e } },
+            ];
+        } else if (year && !month) {
+            const y = parseInt(year);
+            const s = new Date(y, 0, 1, 0, 0, 0, 0);
+            const e = new Date(y, 11, 31, 23, 59, 59, 999);
+            filter.$or = [
+                { date: { $gte: s, $lte: e } },
+                { date: { $exists: false }, createdAt: { $gte: s, $lte: e } },
+            ];
+        } else if (view && view !== "All" && view !== "Custom") {
+            const { currentPeriode } = useSelectedViewPeriode(view);
+            const period = currentPeriode();
+            if (period.start && period.end) {
+                filter.$or = [
+                    { date: { $gte: period.start, $lte: period.end } },
+                    { date: { $exists: false }, createdAt: { $gte: period.start, $lte: period.end } },
+                ];
+            }
+        }
+
+        return filter;
+    }
+
     static async getTransactions(req: Request, res: Response) {
         try {
             validate(req.query, getTransactionQuerySchema);
 
-            const { view = "All", type, category, search } = req.query as any;
             const user = req.user!;
+            const filter = TransactionService.buildFilter(req.query, user.id_user);
+            const { sort = "newest" } = req.query as any;
 
-            const filter: Record<string, any> = { user: user.id_user };
-
-            if (type) {
-                filter.type = new RegExp(`^${type}$`, "i");
-            }
-
-            if (category) {
-                filter.category = category;
-            }
-
-            if (search) {
-                filter.description = { $regex: search, $options: "i" };
-            }
-
-            if (view !== "All") {
-                const { currentPeriode } = useSelectedViewPeriode(view);
-                const period = currentPeriode();
-                if (period.start && period.end) {
-                    filter.$or = [
-                        { date: { $gte: period.start, $lte: period.end } },
-                        { date: { $exists: false }, createdAt: { $gte: period.start, $lte: period.end } },
-                    ];
-                }
+            let sortOptions: Record<string, any> = { date: -1, createdAt: -1 };
+            if (sort === "oldest") {
+                sortOptions = { date: 1, createdAt: 1 };
+            } else if (sort === "highest") {
+                sortOptions = { amount: -1, date: -1 };
+            } else if (sort === "lowest") {
+                sortOptions = { amount: 1, date: -1 };
             }
 
             const rawTransactions = await TransactionModel
                 .find(filter)
                 .populate("category")
-                .sort({ date: -1, createdAt: -1 })
+                .sort(sortOptions as any)
                 .lean();
 
             const transactions = rawTransactions.map((t: any) => ({
@@ -167,7 +208,8 @@ class TransactionService {
 
     static async getTransactionSummary(req: Request, res: Response) {
         const user = req.user!;
-        const transactions = await TransactionModel.find({ user: user.id_user });
+        const filter = TransactionService.buildFilter(req.query, user.id_user);
+        const transactions = await TransactionModel.find(filter);
 
         let incomeTotal = 0;
         let expenseTotal = 0;
