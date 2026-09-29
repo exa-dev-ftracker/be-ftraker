@@ -4,6 +4,7 @@ import CategoryModel from "./categoryModel";
 import { createCategorySchema, updateCategorySchema } from "./categorySchema";
 import { validate } from "../../utils/validation";
 import { ErrorResponse, SuccessResponse } from "../../utils/response";
+import TransactionModel from "../transaction/transactionModel";
 
 const defaultCategories = [
     { name: "Makanan & Minuman", type: "expense", color: "#F43F5E", icon: "fastfood" },
@@ -81,14 +82,35 @@ class CategoryService {
         const { categoryId } = req.params;
         const user = req.user!;
 
-        const category = await CategoryModel.findOneAndDelete(
+        const category = await CategoryModel.findOne(
             { _id: categoryId, user: user.id_user },
+            null,
             { session }
         );
 
         if (!category) {
             return res.status(404).json(ErrorResponse("Category not found", null, 404));
         }
+
+        const usedCount = await TransactionModel.countDocuments({
+            user: user.id_user,
+            category: categoryId,
+        }).session(session);
+
+        if (usedCount > 0) {
+            return res.status(400).json(
+                ErrorResponse(
+                    `Cannot delete category "${category.name}": it is currently used by ${usedCount} transaction${usedCount > 1 ? "s" : ""}. Please reassign or delete those transactions first.`,
+                    null,
+                    400
+                )
+            );
+        }
+
+        await CategoryModel.deleteOne(
+            { _id: categoryId, user: user.id_user },
+            { session }
+        );
 
         return res.status(200).json(
             SuccessResponse(null, "Category deleted successfully", 200)
