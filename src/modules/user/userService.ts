@@ -146,35 +146,70 @@ class UserService {
             audience: Config.GOOGLE_CLIENT_ID
         });
 
-        const {email, email_verified} = ticket.getPayload() as any;
+        const {email, email_verified, name: googleName, sub: googleId} = ticket.getPayload() as any;
 
         if (!email_verified) {
             return res.status(400).json(ErrorResponse("Email not verified", null, 400));
         }
 
-        const existingUser = await UserModel.findOne({email});
+        // 1. Try finding user by google_id
+        let user = googleId ? await UserModel.findOne({ google_id: googleId }) : null;
 
-        if (!existingUser) {
-            return res.status(404).json(ErrorResponse("User does not exist", null, 404));
+        // 2. If not found by google_id, try finding by email and auto-link
+        if (!user && email) {
+            user = await UserModel.findOne({ email });
+            if (user) {
+                if (googleId && !user.google_id) {
+                    user.google_id = googleId;
+                }
+                if (!user.google_email) {
+                    user.google_email = email;
+                }
+                await user.save({ session });
+                logger.info(`Auto-linked Google ID to existing account: ${user.email}`);
+            }
+        }
+
+        // 3. If still not found, create new account (Sign Up with Google)
+        let isNewUser = false;
+        if (!user) {
+            isNewUser = true;
+            let formattedName = "Google User";
+            if (googleName && typeof googleName === "string" && googleName.trim()) {
+                formattedName = googleName.trim();
+            } else if (email) {
+                formattedName = email.split("@")[0];
+            }
+
+            user = new UserModel({
+                name: formattedName,
+                email,
+                password: null,
+                google_id: googleId || null,
+                google_email: email,
+            });
+
+            await user.save({ session });
+            logger.info(`Created new user with Google ID: ${user.email}`);
         }
 
         const accessToken = generateJwt({
-            email,
-            name: existingUser.name,
+            email: user.email,
+            name: user.name,
             type: "access",
-            id_user: existingUser.id
+            id_user: user.id
         });
 
         const refreshToken = generateJwt({
-            email,
-            name: existingUser.name,
+            email: user.email,
+            name: user.name,
             type: "refresh",
-            id_user: existingUser.id
+            id_user: user.id
         });
 
         await new tokenModel({
             token: refreshToken,
-            id_user: existingUser.id,
+            id_user: user.id,
             expireAt: new Date(Date.now() + 60 * 60 * 24 * 30 * 1000)
         }).save({session});
 
@@ -188,13 +223,13 @@ class UserService {
 
         await clientRedis.setEx(`refreshToken:${refreshToken}`, 60 * 60 * 24 * 30, refreshToken);
 
-        logger.info(`User ${email} logged in with Google successfully`);
+        logger.info(`User ${user.email} logged in with Google successfully`);
 
-        return res.status(200).json(
+        return res.status(isNewUser ? 201 : 200).json(
             SuccessResponse<ResponseAuth>(
                 {accessToken, refreshToken},
-                "User already exists",
-                200
+                isNewUser ? "User registered with Google successfully" : "User logged in with Google successfully",
+                isNewUser ? 201 : 200
             )
         );
     }
