@@ -62,7 +62,9 @@ export const getTransactionQuerySchema = zod.object({
     endDate: zod.string().optional(),
     year: zod.string().optional(),
     month: zod.string().optional(),
+    timezone: zod.string().optional(),
 });
+
 
 export const n8nWebhookBodySchema = zod.object({
     amount: zod.number().min(1, "Amount must be a positive number"),

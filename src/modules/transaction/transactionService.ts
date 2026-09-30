@@ -5,12 +5,14 @@ import { createTransactionBodySchema, getTransactionQuerySchema, updateTransacti
 import { ErrorResponse, SuccessResponse } from "../../utils/response";
 import TransactionModel from "./transactionModel";
 import useSelectedViewPeriode from "../../utils/selectedViewPeriode";
+import { fromZonedTime } from "date-fns-tz";
+import { resolveUserTimezone } from "../../utils/timezone";
 import { ZodError } from "zod";
 import mongoose from "mongoose";
 
 class TransactionService {
 
-    private static buildFilter(query: any, userId: string): Record<string, any> {
+    private static buildFilter(query: any, userId: string, timezone: string = "UTC"): Record<string, any> {
         const { view = "All", type, category, search, startDate, endDate, year, month } = query;
         const filter: Record<string, any> = { user: userId };
 
@@ -27,10 +29,10 @@ class TransactionService {
         }
 
         if (startDate && endDate) {
-            const s = new Date(startDate);
-            s.setHours(0, 0, 0, 0);
-            const e = new Date(endDate);
-            e.setHours(23, 59, 59, 999);
+            const sStr = String(startDate).split("T")[0];
+            const eStr = String(endDate).split("T")[0];
+            const s = fromZonedTime(new Date(`${sStr}T00:00:00.000`), timezone);
+            const e = fromZonedTime(new Date(`${eStr}T23:59:59.999`), timezone);
             filter.$or = [
                 { date: { $gte: s, $lte: e } },
                 { date: { $exists: false }, createdAt: { $gte: s, $lte: e } },
@@ -38,22 +40,26 @@ class TransactionService {
         } else if (year && month) {
             const y = parseInt(year);
             const m = parseInt(month) - 1;
-            const s = new Date(y, m, 1, 0, 0, 0, 0);
-            const e = new Date(y, m + 1, 0, 23, 59, 59, 999);
+            const startZoned = new Date(y, m, 1, 0, 0, 0, 0);
+            const endZoned = new Date(y, m + 1, 0, 23, 59, 59, 999);
+            const s = fromZonedTime(startZoned, timezone);
+            const e = fromZonedTime(endZoned, timezone);
             filter.$or = [
                 { date: { $gte: s, $lte: e } },
                 { date: { $exists: false }, createdAt: { $gte: s, $lte: e } },
             ];
         } else if (year && !month) {
             const y = parseInt(year);
-            const s = new Date(y, 0, 1, 0, 0, 0, 0);
-            const e = new Date(y, 11, 31, 23, 59, 59, 999);
+            const startZoned = new Date(y, 0, 1, 0, 0, 0, 0);
+            const endZoned = new Date(y, 11, 31, 23, 59, 59, 999);
+            const s = fromZonedTime(startZoned, timezone);
+            const e = fromZonedTime(endZoned, timezone);
             filter.$or = [
                 { date: { $gte: s, $lte: e } },
                 { date: { $exists: false }, createdAt: { $gte: s, $lte: e } },
             ];
         } else if (view && view !== "All" && view !== "Custom") {
-            const { currentPeriode } = useSelectedViewPeriode(view);
+            const { currentPeriode } = useSelectedViewPeriode(view, timezone);
             const period = currentPeriode();
             if (period.start && period.end) {
                 filter.$or = [
@@ -71,7 +77,8 @@ class TransactionService {
             validate(req.query, getTransactionQuerySchema);
 
             const user = req.user!;
-            const filter = TransactionService.buildFilter(req.query, user.id_user);
+            const timezone = await resolveUserTimezone(req, user.id_user);
+            const filter = TransactionService.buildFilter(req.query, user.id_user, timezone);
             const { sort = "newest" } = req.query as any;
 
             let sortOptions: Record<string, any> = { date: -1, createdAt: -1 };

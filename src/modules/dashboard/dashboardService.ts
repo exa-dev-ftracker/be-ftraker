@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import TransactionModel from "../transaction/transactionModel";
 import useSelectedViewPeriode from "../../utils/selectedViewPeriode";
+import { resolveUserTimezone } from "../../utils/timezone";
 import { SuccessResponse } from "../../utils/response";
 
 export interface TopExpenseItem {
@@ -24,8 +25,10 @@ class DashboardService {
         const user = req.user!;
         const { view = "Month" } = req.query as { view?: string };
 
-        const { currentPeriode } = useSelectedViewPeriode(view);
+        const timezone = await resolveUserTimezone(req, user.id_user);
+        const { currentPeriode } = useSelectedViewPeriode(view, timezone);
         const period = currentPeriode();
+
 
         const baseQuery: Record<string, any> = { user: user.id_user };
         if (view !== "All" && period.start && period.end) {
@@ -107,8 +110,10 @@ class DashboardService {
         const user = req.user!;
         const { view = "Month" } = req.query as { view?: string };
 
-        const { currentPeriode } = useSelectedViewPeriode(view);
+        const timezone = await resolveUserTimezone(req, user.id_user);
+        const { currentPeriode } = useSelectedViewPeriode(view, timezone);
         const period = currentPeriode();
+
 
         const baseQuery: Record<string, any> = { user: user.id_user };
         if (view !== "All" && period.start && period.end) {
