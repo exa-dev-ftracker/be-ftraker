@@ -10,6 +10,26 @@ import { resolveUserTimezone } from "../../utils/timezone";
 import { ZodError } from "zod";
 import mongoose from "mongoose";
 
+interface CursorPayload {
+    id: string;
+    date?: string;
+    amount?: number;
+}
+
+function decodeCursor(token?: string): CursorPayload | null {
+    if (!token) return null;
+    try {
+        const json = Buffer.from(token, "base64url").toString("utf-8");
+        return JSON.parse(json);
+    } catch {
+        return null;
+    }
+}
+
+function encodeCursor(payload: CursorPayload): string {
+    return Buffer.from(JSON.stringify(payload)).toString("base64url");
+}
+
 class TransactionService {
 
     private static buildFilter(query: any, userId: string, timezone: string = "UTC"): Record<string, any> {
@@ -22,6 +42,10 @@ class TransactionService {
 
         if (category && category !== "all") {
             filter.category = category;
+        }
+
+        if (query.linkedIncomeId) {
+            filter.linkedIncomeId = query.linkedIncomeId;
         }
 
         if (search && String(search).trim()) {
@@ -79,27 +103,123 @@ class TransactionService {
             const user = req.user!;
             const timezone = await resolveUserTimezone(req, user.id_user);
             const filter = TransactionService.buildFilter(req.query, user.id_user, timezone);
-            const { sort = "newest" } = req.query as any;
+            const { sort = "newest", cursor, limit } = req.query as any;
 
-            let sortOptions: Record<string, any> = { date: -1, createdAt: -1 };
+            let sortOptions: Record<string, any> = { date: -1, createdAt: -1, _id: -1 };
             if (sort === "oldest") {
-                sortOptions = { date: 1, createdAt: 1 };
+                sortOptions = { date: 1, createdAt: 1, _id: 1 };
             } else if (sort === "highest") {
-                sortOptions = { amount: -1, date: -1 };
+                sortOptions = { amount: -1, date: -1, createdAt: -1, _id: -1 };
             } else if (sort === "lowest") {
-                sortOptions = { amount: 1, date: -1 };
+                sortOptions = { amount: 1, date: 1, createdAt: 1, _id: 1 };
             }
 
-            const rawTransactions = await TransactionModel
+            // Parse and apply cursor condition if present
+            const parsedCursor = decodeCursor(cursor);
+            if (parsedCursor && parsedCursor.id && mongoose.Types.ObjectId.isValid(parsedCursor.id)) {
+                const cursorId = new mongoose.Types.ObjectId(parsedCursor.id);
+                const cursorDate = parsedCursor.date ? new Date(parsedCursor.date) : null;
+                const cursorAmount = parsedCursor.amount !== undefined ? Number(parsedCursor.amount) : null;
+
+                let cursorCondition: any = null;
+                if (sort === "oldest") {
+                    if (cursorDate && !isNaN(cursorDate.getTime())) {
+                        cursorCondition = {
+                            $or: [
+                                { date: { $gt: cursorDate } },
+                                { date: cursorDate, _id: { $gt: cursorId } },
+                            ],
+                        };
+                    } else {
+                        cursorCondition = { _id: { $gt: cursorId } };
+                    }
+                } else if (sort === "highest") {
+                    if (cursorAmount !== null && !isNaN(cursorAmount)) {
+                        cursorCondition = {
+                            $or: [
+                                { amount: { $lt: cursorAmount } },
+                                { amount: cursorAmount, _id: { $lt: cursorId } },
+                            ],
+                        };
+                    } else {
+                        cursorCondition = { _id: { $lt: cursorId } };
+                    }
+                } else if (sort === "lowest") {
+                    if (cursorAmount !== null && !isNaN(cursorAmount)) {
+                        cursorCondition = {
+                            $or: [
+                                { amount: { $gt: cursorAmount } },
+                                { amount: cursorAmount, _id: { $gt: cursorId } },
+                            ],
+                        };
+                    } else {
+                        cursorCondition = { _id: { $gt: cursorId } };
+                    }
+                } else {
+                    // newest
+                    if (cursorDate && !isNaN(cursorDate.getTime())) {
+                        cursorCondition = {
+                            $or: [
+                                { date: { $lt: cursorDate } },
+                                { date: cursorDate, _id: { $lt: cursorId } },
+                            ],
+                        };
+                    } else {
+                        cursorCondition = { _id: { $lt: cursorId } };
+                    }
+                }
+
+                if (cursorCondition) {
+                    if (!filter.$and) {
+                        filter.$and = [];
+                    }
+                    filter.$and.push(cursorCondition);
+                }
+            }
+
+            const isPaginated = limit !== undefined || cursor !== undefined;
+            const limitNum = isPaginated ? Math.min(100, Math.max(1, parseInt(limit) || 20)) : 0;
+
+            const query = TransactionModel
                 .find(filter)
                 .populate("category")
-                .sort(sortOptions as any)
-                .lean();
+                .populate("linkedIncomeId", "description amount date type")
+                .sort(sortOptions as any);
 
-            const transactions = rawTransactions.map((t: any) => ({
+            if (isPaginated) {
+                query.limit(limitNum + 1);
+            }
+
+            const rawTransactions = await query.lean();
+            const hasMore = isPaginated ? rawTransactions.length > limitNum : false;
+            const pageDocs = hasMore ? rawTransactions.slice(0, limitNum) : rawTransactions;
+
+            let nextCursor: string | null = null;
+            if (hasMore && pageDocs.length > 0) {
+                const lastItem: any = pageDocs[pageDocs.length - 1];
+                const rawD = lastItem.date || lastItem.createdAt;
+                nextCursor = encodeCursor({
+                    id: String(lastItem._id),
+                    date: rawD ? new Date(rawD).toISOString() : undefined,
+                    amount: lastItem.amount,
+                });
+            }
+
+            const transactions = pageDocs.map((t: any) => ({
                 ...t,
                 date: t.date && !String(t.date).includes("2026-09-28T23:32:05") ? t.date : (t.createdAt || t.date),
             }));
+
+            if (isPaginated) {
+                return res.status(200).json(SuccessResponse({
+                    items: transactions,
+                    pagination: {
+                        nextCursor,
+                        hasMore,
+                        limit: limitNum,
+                    },
+                }, "Transactions retrieved successfully", 200));
+            }
 
             return res.status(200).json(SuccessResponse(transactions, "Transactions retrieved successfully", 200));
 
@@ -122,23 +242,152 @@ class TransactionService {
         const transaction = await TransactionModel
             .findOne({ _id: transactionId, user: user.id_user })
             .populate("category")
+            .populate("linkedIncomeId", "description amount date type")
             .lean();
 
         if (!transaction) {
             return res.status(404).json(ErrorResponse("Not Found", "Transaction not found", 404));
         }
 
+        let extraDetails: Record<string, any> = {};
+        if (transaction.type?.toLowerCase() === "income") {
+            const linkedExpenses = await TransactionModel.find({
+                linkedIncomeId: transaction._id,
+                user: user.id_user,
+            })
+                .populate("category")
+                .sort({ date: -1, createdAt: -1 })
+                .lean();
+
+            const totalLinkedExpense = linkedExpenses.reduce((sum, item: any) => sum + (item.amount || 0), 0);
+            const remainingAmount = transaction.amount - totalLinkedExpense;
+            const percentageUsed = transaction.amount > 0 ? (totalLinkedExpense / transaction.amount) * 100 : 0;
+
+            extraDetails = {
+                linkedExpenses: linkedExpenses.map((e: any) => ({
+                    ...e,
+                    date: e.date || e.createdAt,
+                })),
+                totalLinkedExpense,
+                remainingAmount,
+                percentageUsed: Number(percentageUsed.toFixed(1)),
+            };
+        }
+
         return res.status(200).json(SuccessResponse({
             ...transaction,
             date: (transaction as any).date || (transaction as any).createdAt,
+            ...extraDetails,
         }, "Transaction retrieved successfully", 200));
+    }
+
+    static async getAvailableIncomes(req: Request, res: Response) {
+        try {
+            const user = req.user!;
+            const { page = "1", limit = "10", search = "" } = req.query as any;
+            const pageNum = Math.max(1, parseInt(page) || 1);
+            const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 10));
+            const skip = (pageNum - 1) * limitNum;
+
+            const filter: Record<string, any> = {
+                user: user.id_user,
+                type: { $regex: /^income$/i },
+            };
+
+            if (search && String(search).trim()) {
+                filter.description = { $regex: String(search).trim(), $options: "i" };
+            }
+
+            const total = await TransactionModel.countDocuments(filter);
+            const totalPages = Math.ceil(total / limitNum);
+            const hasMore = pageNum < totalPages;
+
+            const incomes = await TransactionModel.find(filter)
+                .populate("category")
+                .sort({ date: -1, createdAt: -1, _id: -1 })
+                .skip(skip)
+                .limit(limitNum)
+                .lean();
+
+            const incomeIds = incomes.map((inc) => inc._id);
+            const expenseAggregations = await TransactionModel.aggregate([
+                {
+                    $match: {
+                        user: new mongoose.Types.ObjectId(user.id_user),
+                        linkedIncomeId: { $in: incomeIds },
+                        type: { $regex: /^expense$/i },
+                    },
+                },
+                {
+                    $group: {
+                        _id: "$linkedIncomeId",
+                        totalUsed: { $sum: "$amount" },
+                        count: { $sum: 1 },
+                    },
+                },
+            ]);
+
+            const expenseMap = new Map<string, { totalUsed: number; count: number }>();
+            for (const item of expenseAggregations) {
+                expenseMap.set(String(item._id), {
+                    totalUsed: item.totalUsed || 0,
+                    count: item.count || 0,
+                });
+            }
+
+            const result = incomes.map((inc: any) => {
+                const usage = expenseMap.get(String(inc._id)) || { totalUsed: 0, count: 0 };
+                const remaining = inc.amount - usage.totalUsed;
+                const percentage = inc.amount > 0 ? (usage.totalUsed / inc.amount) * 100 : 0;
+
+                return {
+                    ...inc,
+                    date: inc.date || inc.createdAt,
+                    totalUsed: usage.totalUsed,
+                    remainingAmount: remaining,
+                    expenseCount: usage.count,
+                    percentageUsed: Number(percentage.toFixed(1)),
+                };
+            });
+
+            return res.status(200).json(SuccessResponse({
+                incomes: result,
+                pagination: {
+                    page: pageNum,
+                    limit: limitNum,
+                    total,
+                    totalPages,
+                    hasMore,
+                },
+            }, "Available incomes retrieved successfully", 200));
+        } catch (error) {
+            logger.error(error);
+            return res.status(500).json(ErrorResponse("Internal server error", (error as Error).message, 500));
+        }
     }
 
     static async createTransaction(req: Request, res: Response, session: mongoose.ClientSession) {
         validate(req.body, createTransactionBodySchema);
 
-        const { amount, type, description, category, date, createdAt } = req.body;
+        const { amount, type, description, category, date, createdAt, linkedIncomeId } = req.body;
         const user = req.user!;
+
+        const normalizedType = type.toLowerCase() === "income" ? "Income" : "Expense";
+
+        // Validate linkedIncomeId if provided
+        let validLinkedIncomeId: any = null;
+        if (linkedIncomeId && normalizedType === "Expense") {
+            const parentIncome = await TransactionModel.findOne({
+                _id: linkedIncomeId,
+                user: user.id_user,
+                type: { $regex: /^income$/i },
+            }).session(session);
+
+            if (!parentIncome) {
+                return res.status(400).json(ErrorResponse("Validation error", "The specified linked income does not exist or is not an Income transaction", 400));
+            }
+            validLinkedIncomeId = parentIncome._id;
+        }
 
         // Real transaction date (when the transaction occurred)
         const transactionDate = date
@@ -148,15 +397,18 @@ class TransactionService {
         const transaction = new TransactionModel({
             user: user.id_user,
             amount,
-            type: type.toLowerCase() === "income" ? "Income" : "Expense",
+            type: normalizedType,
             description,
             category: category || null,
+            linkedIncomeId: validLinkedIncomeId,
             date: transactionDate,
-            // createdAt is automatically handled by Mongoose timestamps for the true entry time
         });
 
         await transaction.save({ session });
         await transaction.populate("category");
+        if (validLinkedIncomeId) {
+            await transaction.populate("linkedIncomeId", "description amount date type");
+        }
 
         const responseData = {
             ...transaction.toObject(),
@@ -169,18 +421,59 @@ class TransactionService {
     static async updateTransaction(req: Request, res: Response, session: mongoose.ClientSession) {
         validate(req.body, updateTransactionBodySchema);
 
-        const { amount, type, description, category, date, createdAt } = req.body;
+        const { amount, type, description, category, date, createdAt, linkedIncomeId } = req.body;
         const { transactionId } = req.params;
         const user = req.user!;
 
-        const transaction = await TransactionModel.findOne({ _id: transactionId, user: user.id_user });
+        const transaction = await TransactionModel.findOne({ _id: transactionId, user: user.id_user }).session(session);
 
         if (!transaction) {
             return res.status(404).json(ErrorResponse("Not Found", "Transaction not found", 404));
         }
 
+        const previousType = transaction.type;
+        const newType = type ? (type.toLowerCase() === "income" ? "Income" : "Expense") : previousType;
+
+        // EDGE CASE 1: Income diubah jadi Expense
+        if (previousType?.toLowerCase() === "income" && newType?.toLowerCase() === "expense") {
+            // Unlink all child expenses referencing this transaction
+            await TransactionModel.updateMany(
+                { linkedIncomeId: transaction._id },
+                { $unset: { linkedIncomeId: "" } },
+                { session }
+            );
+            transaction.linkedIncomeId = undefined;
+        }
+
+        // EDGE CASE 2: Expense diubah jadi Income
+        else if (previousType?.toLowerCase() === "expense" && newType?.toLowerCase() === "income") {
+            // Income cannot be funded by another income
+            transaction.linkedIncomeId = undefined;
+        }
+
+        // Handle linkedIncomeId update if currently an Expense
+        if (newType?.toLowerCase() === "expense" && linkedIncomeId !== undefined) {
+            if (!linkedIncomeId) {
+                transaction.linkedIncomeId = undefined;
+            } else {
+                if (String(linkedIncomeId) === String(transaction._id)) {
+                    return res.status(400).json(ErrorResponse("Validation error", "Transaction cannot link to itself", 400));
+                }
+                const parentIncome = await TransactionModel.findOne({
+                    _id: linkedIncomeId,
+                    user: user.id_user,
+                    type: { $regex: /^income$/i },
+                }).session(session);
+
+                if (!parentIncome) {
+                    return res.status(400).json(ErrorResponse("Validation error", "The specified linked income does not exist or is not an Income transaction", 400));
+                }
+                transaction.linkedIncomeId = parentIncome._id as any;
+            }
+        }
+
         if (amount !== undefined) transaction.amount = amount;
-        if (type !== undefined) transaction.type = type.toLowerCase() === "income" ? "Income" : "Expense";
+        if (type !== undefined) transaction.type = newType;
         if (description !== undefined) transaction.description = description;
         if (category !== undefined) transaction.category = category;
         if (date !== undefined) transaction.date = new Date(date);
@@ -188,6 +481,9 @@ class TransactionService {
 
         await transaction.save({ session });
         await transaction.populate("category");
+        if (transaction.linkedIncomeId) {
+            await transaction.populate("linkedIncomeId", "description amount date type");
+        }
 
         const responseData = {
             ...transaction.toObject(),
@@ -208,6 +504,15 @@ class TransactionService {
 
         if (!transaction) {
             return res.status(404).json(ErrorResponse("Not Found", "Transaction not found", 404));
+        }
+
+        // EDGE CASE 3: If deleted transaction is an Income, unlink all child expenses
+        if (transaction.type?.toLowerCase() === "income") {
+            await TransactionModel.updateMany(
+                { linkedIncomeId: transactionId },
+                { $unset: { linkedIncomeId: "" } },
+                { session }
+            );
         }
 
         return res.status(200).json(SuccessResponse(null, "Transaction deleted successfully", 200));

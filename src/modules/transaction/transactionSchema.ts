@@ -15,6 +15,7 @@ export const createTransactionBodySchema = zod.object({
         }
         return true;
     }, { message: "Invalid date format for transaction date" }),
+    linkedIncomeId: zod.string().regex(/^[0-9a-f]{24}$/, "Invalid ObjectId").optional().nullable(),
     createdAt: zod.string().optional().refine((date) => {
         if (date) {
             const parsedDate = new Date(date);
@@ -34,6 +35,7 @@ export const updateTransactionBodySchema = zod.object({
     ),
     description: zod.string().min(1, "Description is required").optional(),
     category: zod.string().optional(),
+    linkedIncomeId: zod.string().regex(/^[0-9a-f]{24}$/, "Invalid ObjectId").optional().nullable(),
     date: zod.string().optional().refine((d) => {
         if (d) {
             const parsed = new Date(d);
@@ -56,6 +58,7 @@ export const getTransactionQuerySchema = zod.object({
     view: zod.string().optional(),
     type: zod.string().optional(),
     category: zod.string().optional(),
+    linkedIncomeId: zod.string().optional(),
     search: zod.string().optional(),
     sort: zod.string().optional(),
     startDate: zod.string().optional(),
@@ -63,6 +66,8 @@ export const getTransactionQuerySchema = zod.object({
     year: zod.string().optional(),
     month: zod.string().optional(),
     timezone: zod.string().optional(),
+    cursor: zod.string().optional(),
+    limit: zod.string().optional(),
 });
 
 

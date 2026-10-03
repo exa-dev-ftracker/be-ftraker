@@ -10,6 +10,9 @@ router.get("/transactions/summary", TransactionService.getTransactionSummary);
 // GET tanpa transaction → tidak perlu session
 router.get("/transactions", TransactionService.getTransactions);
 
+// Available incomes endpoint (for linking expenses)
+router.get("/transactions/incomes/available", TransactionService.getAvailableIncomes);
+
 // GET by ID tanpa transaction → tidak perlu session
 router.get("/transactions/:transactionId", TransactionService.getTransactionById);
 
