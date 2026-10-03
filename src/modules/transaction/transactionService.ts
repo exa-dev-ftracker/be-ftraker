@@ -10,25 +10,6 @@ import { resolveUserTimezone } from "../../utils/timezone";
 import { ZodError } from "zod";
 import mongoose from "mongoose";
 
-interface CursorPayload {
-    id: string;
-    date?: string;
-    amount?: number;
-}
-
-function decodeCursor(token?: string): CursorPayload | null {
-    if (!token) return null;
-    try {
-        const json = Buffer.from(token, "base64url").toString("utf-8");
-        return JSON.parse(json);
-    } catch {
-        return null;
-    }
-}
-
-function encodeCursor(payload: CursorPayload): string {
-    return Buffer.from(JSON.stringify(payload)).toString("base64url");
-}
 
 class TransactionService {
 
@@ -103,7 +84,7 @@ class TransactionService {
             const user = req.user!;
             const timezone = await resolveUserTimezone(req, user.id_user);
             const filter = TransactionService.buildFilter(req.query, user.id_user, timezone);
-            const { sort = "newest", cursor, limit } = req.query as any;
+            const { sort = "newest", limit, page, offset } = req.query as any;
 
             let sortOptions: Record<string, any> = { date: -1, createdAt: -1, _id: -1 };
             if (sort === "oldest") {
@@ -114,112 +95,63 @@ class TransactionService {
                 sortOptions = { amount: 1, date: 1, createdAt: 1, _id: 1 };
             }
 
-            // Parse and apply cursor condition if present
-            const parsedCursor = decodeCursor(cursor);
-            if (parsedCursor && parsedCursor.id && mongoose.Types.ObjectId.isValid(parsedCursor.id)) {
-                const cursorId = new mongoose.Types.ObjectId(parsedCursor.id);
-                const cursorDate = parsedCursor.date ? new Date(parsedCursor.date) : null;
-                const cursorAmount = parsedCursor.amount !== undefined ? Number(parsedCursor.amount) : null;
-
-                let cursorCondition: any = null;
-                if (sort === "oldest") {
-                    if (cursorDate && !isNaN(cursorDate.getTime())) {
-                        cursorCondition = {
-                            $or: [
-                                { date: { $gt: cursorDate } },
-                                { date: cursorDate, _id: { $gt: cursorId } },
-                            ],
-                        };
-                    } else {
-                        cursorCondition = { _id: { $gt: cursorId } };
-                    }
-                } else if (sort === "highest") {
-                    if (cursorAmount !== null && !isNaN(cursorAmount)) {
-                        cursorCondition = {
-                            $or: [
-                                { amount: { $lt: cursorAmount } },
-                                { amount: cursorAmount, _id: { $lt: cursorId } },
-                            ],
-                        };
-                    } else {
-                        cursorCondition = { _id: { $lt: cursorId } };
-                    }
-                } else if (sort === "lowest") {
-                    if (cursorAmount !== null && !isNaN(cursorAmount)) {
-                        cursorCondition = {
-                            $or: [
-                                { amount: { $gt: cursorAmount } },
-                                { amount: cursorAmount, _id: { $gt: cursorId } },
-                            ],
-                        };
-                    } else {
-                        cursorCondition = { _id: { $gt: cursorId } };
-                    }
-                } else {
-                    // newest
-                    if (cursorDate && !isNaN(cursorDate.getTime())) {
-                        cursorCondition = {
-                            $or: [
-                                { date: { $lt: cursorDate } },
-                                { date: cursorDate, _id: { $lt: cursorId } },
-                            ],
-                        };
-                    } else {
-                        cursorCondition = { _id: { $lt: cursorId } };
-                    }
-                }
-
-                if (cursorCondition) {
-                    if (!filter.$and) {
-                        filter.$and = [];
-                    }
-                    filter.$and.push(cursorCondition);
-                }
-            }
-
-            const isPaginated = limit !== undefined || cursor !== undefined;
-            const limitNum = isPaginated ? Math.min(100, Math.max(1, parseInt(limit) || 20)) : 0;
-
-            const query = TransactionModel
-                .find(filter)
-                .populate("category")
-                .populate("linkedIncomeId", "description amount date type")
-                .sort(sortOptions as any);
+            const isPaginated = limit !== undefined || page !== undefined || offset !== undefined;
 
             if (isPaginated) {
-                query.limit(limitNum + 1);
-            }
+                const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 20));
+                let skip = 0;
+                let pageNum = 1;
 
-            const rawTransactions = await query.lean();
-            const hasMore = isPaginated ? rawTransactions.length > limitNum : false;
-            const pageDocs = hasMore ? rawTransactions.slice(0, limitNum) : rawTransactions;
+                if (offset !== undefined) {
+                    skip = Math.max(0, parseInt(offset) || 0);
+                    pageNum = Math.floor(skip / limitNum) + 1;
+                } else if (page !== undefined) {
+                    pageNum = Math.max(1, parseInt(page) || 1);
+                    skip = (pageNum - 1) * limitNum;
+                }
 
-            let nextCursor: string | null = null;
-            if (hasMore && pageDocs.length > 0) {
-                const lastItem: any = pageDocs[pageDocs.length - 1];
-                const rawD = lastItem.date || lastItem.createdAt;
-                nextCursor = encodeCursor({
-                    id: String(lastItem._id),
-                    date: rawD ? new Date(rawD).toISOString() : undefined,
-                    amount: lastItem.amount,
-                });
-            }
+                const total = await TransactionModel.countDocuments(filter);
+                const totalPages = Math.ceil(total / limitNum);
+                const hasMore = skip + limitNum < total;
 
-            const transactions = pageDocs.map((t: any) => ({
-                ...t,
-                date: t.date && !String(t.date).includes("2026-09-28T23:32:05") ? t.date : (t.createdAt || t.date),
-            }));
+                const rawTransactions = await TransactionModel
+                    .find(filter)
+                    .populate("category")
+                    .populate("linkedIncomeId", "description amount date type")
+                    .sort(sortOptions as any)
+                    .skip(skip)
+                    .limit(limitNum)
+                    .lean();
 
-            if (isPaginated) {
+                const transactions = rawTransactions.map((t: any) => ({
+                    ...t,
+                    date: t.date && !String(t.date).includes("2026-09-28T23:32:05") ? t.date : (t.createdAt || t.date),
+                }));
+
                 return res.status(200).json(SuccessResponse({
                     items: transactions,
                     pagination: {
-                        nextCursor,
-                        hasMore,
+                        page: pageNum,
                         limit: limitNum,
+                        offset: skip,
+                        total,
+                        totalPages,
+                        hasMore,
                     },
                 }, "Transactions retrieved successfully", 200));
             }
+
+            const rawTransactions = await TransactionModel
+                .find(filter)
+                .populate("category")
+                .populate("linkedIncomeId", "description amount date type")
+                .sort(sortOptions as any)
+                .lean();
+
+            const transactions = rawTransactions.map((t: any) => ({
+                ...t,
+                date: t.date && !String(t.date).includes("2026-09-28T23:32:05") ? t.date : (t.createdAt || t.date),
+            }));
 
             return res.status(200).json(SuccessResponse(transactions, "Transactions retrieved successfully", 200));
 

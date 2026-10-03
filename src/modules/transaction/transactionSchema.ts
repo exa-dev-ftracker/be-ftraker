@@ -68,6 +68,8 @@ export const getTransactionQuerySchema = zod.object({
     timezone: zod.string().optional(),
     cursor: zod.string().optional(),
     limit: zod.string().optional(),
+    page: zod.string().optional(),
+    offset: zod.string().optional(),
 });
 
 
