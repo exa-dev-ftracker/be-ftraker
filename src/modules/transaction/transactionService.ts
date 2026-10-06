@@ -201,9 +201,36 @@ class TransactionService {
                     date: e.date || e.createdAt,
                 })),
                 totalLinkedExpense,
+                totalUsed: totalLinkedExpense,
                 remainingAmount,
+                expenseCount: linkedExpenses.length,
                 percentageUsed: Number(percentageUsed.toFixed(1)),
             };
+        } else if (transaction.linkedIncomeId) {
+            const incomeDoc: any = transaction.linkedIncomeId;
+            if (incomeDoc && incomeDoc._id) {
+                const siblingExpenses = await TransactionModel.find({
+                    linkedIncomeId: incomeDoc._id,
+                    user: user.id_user,
+                }).lean();
+
+                const totalUsedOnIncome = siblingExpenses.reduce((sum, item: any) => sum + (item.amount || 0), 0);
+                const remainingOnIncome = (incomeDoc.amount || 0) - totalUsedOnIncome;
+                const percentageUsedOnIncome = (incomeDoc.amount || 0) > 0 ? (totalUsedOnIncome / incomeDoc.amount) * 100 : 0;
+
+                extraDetails = {
+                    linkedIncomeDetails: {
+                        _id: incomeDoc._id,
+                        description: incomeDoc.description,
+                        amount: incomeDoc.amount,
+                        date: incomeDoc.date || incomeDoc.createdAt,
+                        totalUsed: totalUsedOnIncome,
+                        remainingAmount: remainingOnIncome,
+                        expenseCount: siblingExpenses.length,
+                        percentageUsed: Number(percentageUsedOnIncome.toFixed(1)),
+                    },
+                };
+            }
         }
 
         return res.status(200).json(SuccessResponse({
