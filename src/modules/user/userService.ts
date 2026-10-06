@@ -485,13 +485,191 @@ class UserService {
         if (!user) {
             return res.status(404).json(ErrorResponse("User not found", null, 404));
         }
+
+        const isAppleRegistered = Boolean(
+            user.apple_id && (!user.password || user.email?.includes('privaterelay.appleid.com') || user.email?.startsWith('apple_'))
+        );
+        const isGoogleLinked = isAppleRegistered ? Boolean(user.google_id) : Boolean(user.google_id || !isAppleRegistered);
+        const googleEmail = user.google_email || (!isAppleRegistered ? user.email : null);
+
         return res.status(200).json(SuccessResponse({
             name: user.name,
             email: user.email,
             phone_number: user.phone_number || null,
             chatbot_enabled: user.chatbot_enabled || false,
             timezone: user.timezone || "UTC",
+            google_id: user.google_id || null,
+            google_email: googleEmail,
+            is_google_linked: isGoogleLinked,
+            is_apple_registered: isAppleRegistered,
+            apple_id: user.apple_id || null,
+            apple_email: user.apple_email || null,
+            is_apple_linked: Boolean(user.apple_id),
         }, "Settings retrieved successfully", 200));
+    }
+
+    static async bindApple(req: Request, res: Response, session: mongoose.ClientSession) {
+        const userPayload = req.user!;
+        const user = await UserModel.findById(userPayload.id_user);
+        if (!user) {
+            return res.status(404).json(ErrorResponse("User not found", null, 404));
+        }
+
+        // Verify account has an email or linked Google account
+        if (!user.email && !user.google_id) {
+            return res.status(400).json(ErrorResponse("Account must have an email or be connected with Google first.", null, 400));
+        }
+
+        const { identityToken, email, userIdentifier } = req.body;
+        if (!identityToken && !userIdentifier) {
+            return res.status(400).json(ErrorResponse("Identity token or user identifier is required", null, 400));
+        }
+
+        let appleUserId: string | null = userIdentifier || null;
+        let resolvedEmail: string | null = email || null;
+
+        if (identityToken) {
+            const decoded = decodeJwt(identityToken) as any;
+            if (decoded) {
+                if (decoded.sub) appleUserId = decoded.sub;
+                if (decoded.email && !resolvedEmail) resolvedEmail = decoded.email;
+            }
+        }
+
+        if (!appleUserId) {
+            return res.status(400).json(ErrorResponse("Invalid Apple identity token", null, 400));
+        }
+
+        // Ensure Apple ID is not already linked to another account
+        const existingAppleUser = await UserModel.findOne({ apple_id: appleUserId });
+        if (existingAppleUser && String(existingAppleUser._id) !== String(user._id)) {
+            return res.status(400).json(ErrorResponse("This Apple ID is already linked to another FTraker account.", null, 400));
+        }
+
+        user.apple_id = appleUserId;
+        user.apple_email = resolvedEmail || user.email;
+        await user.save({ session });
+
+        logger.info(`[Apple Bind] User ${user.email} successfully linked Apple ID (${appleUserId})`);
+
+        return res.status(200).json(SuccessResponse({
+            is_apple_linked: true,
+            apple_email: user.apple_email,
+            apple_id: user.apple_id,
+        }, "Apple ID linked to your account successfully.", 200));
+    }
+
+    static async unbindApple(req: Request, res: Response, session: mongoose.ClientSession) {
+        const userPayload = req.user!;
+        const user = await UserModel.findById(userPayload.id_user);
+        if (!user) {
+            return res.status(404).json(ErrorResponse("User not found", null, 404));
+        }
+
+        if (!user.apple_id) {
+            return res.status(400).json(ErrorResponse("Your account is not linked to an Apple ID.", null, 400));
+        }
+
+        // Security Check: If account uses Apple Private Relay or was registered via Apple,
+        // setting a password alone is insufficient because the user does not know their masked proxy email.
+        // Google MUST be linked to avoid lockout.
+        const isRelayEmail = user.email?.toLowerCase().includes("privaterelay.appleid.com") ||
+                             user.apple_email?.toLowerCase().includes("privaterelay.appleid.com") ||
+                             user.email?.toLowerCase().startsWith("apple_");
+
+        if (isRelayEmail && !user.google_id) {
+            return res.status(400).json(ErrorResponse(
+                "Cannot unbind Apple ID with a private relay email. Please link your Google account first to prevent account lockout, or delete this account.",
+                null,
+                400
+            ));
+        }
+
+        // Security: Ensure user has another authentication method (Google or Password) to avoid lockout
+        if (!user.google_id && !user.password) {
+            return res.status(400).json(ErrorResponse(
+                "Cannot unbind Apple ID. Please link your Google account or set a password first to prevent losing account access.",
+                null,
+                400
+            ));
+        }
+
+        user.apple_id = null;
+        user.apple_email = null;
+        await user.save({ session });
+
+        logger.info(`[Apple Unbind] User ${user.email} successfully unlinked Apple ID`);
+
+        return res.status(200).json(SuccessResponse({
+            is_apple_linked: false,
+            apple_email: null,
+            apple_id: null,
+        }, "Apple ID unlinked from your account successfully.", 200));
+    }
+
+    static async bindGoogle(req: Request, res: Response, session: mongoose.ClientSession) {
+        const userPayload = req.user!;
+        const user = await UserModel.findById(userPayload.id_user);
+        if (!user) {
+            return res.status(404).json(ErrorResponse("User not found", null, 404));
+        }
+
+        const { credential, code } = req.body;
+        if (!credential && !code) {
+            return res.status(400).json(ErrorResponse("Google authorization code or credential is required", null, 400));
+        }
+
+        let email = "";
+        let googleId = "";
+
+        const client = new OAuth2Client(
+            Config.GOOGLE_CLIENT_ID,
+            Config.GOOGLE_CLIENT_SECRET,
+            "postmessage"
+        );
+
+        if (code) {
+            const { tokens } = await client.getToken(code);
+            if (tokens.id_token) {
+                const ticket = await client.verifyIdToken({
+                    idToken: tokens.id_token,
+                    audience: Config.GOOGLE_CLIENT_ID,
+                });
+                const payload = ticket.getPayload() as any;
+                email = payload?.email || "";
+                googleId = payload?.sub || "";
+            }
+        } else if (credential) {
+            const ticket = await client.verifyIdToken({
+                idToken: credential,
+                audience: Config.GOOGLE_CLIENT_ID,
+            });
+            const payload = ticket.getPayload() as any;
+            email = payload?.email || "";
+            googleId = payload?.sub || "";
+        }
+
+        if (!googleId) {
+            return res.status(400).json(ErrorResponse("Failed to verify Google identity", null, 400));
+        }
+
+        // Ensure Google account is not already linked to another user
+        const existingGoogleUser = await UserModel.findOne({ google_id: googleId });
+        if (existingGoogleUser && String(existingGoogleUser._id) !== String(user._id)) {
+            return res.status(400).json(ErrorResponse("This Google account is already linked to another FTraker account.", null, 400));
+        }
+
+        user.google_id = googleId;
+        user.google_email = email || user.email;
+        await user.save({ session });
+
+        logger.info(`[Google Bind] User ${user.email} successfully linked Google ID (${googleId})`);
+
+        return res.status(200).json(SuccessResponse({
+            is_google_linked: true,
+            google_email: user.google_email,
+            google_id: user.google_id,
+        }, "Google account connected successfully.", 200));
     }
 
     static async updateTimezone(req: Request, res: Response, session: mongoose.ClientSession) {
