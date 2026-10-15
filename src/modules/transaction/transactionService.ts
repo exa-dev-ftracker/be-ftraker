@@ -125,7 +125,7 @@ class TransactionService {
 
                 const transactions = rawTransactions.map((t: any) => ({
                     ...t,
-                    date: t.date && !String(t.date).includes("2026-09-28T23:32:05") ? t.date : (t.createdAt || t.date),
+                    date: t.date || t.createdAt,
                 }));
 
                 return res.status(200).json(SuccessResponse({
@@ -150,7 +150,7 @@ class TransactionService {
 
             const transactions = rawTransactions.map((t: any) => ({
                 ...t,
-                date: t.date && !String(t.date).includes("2026-09-28T23:32:05") ? t.date : (t.createdAt || t.date),
+                date: t.date || t.createdAt,
             }));
 
             return res.status(200).json(SuccessResponse(transactions, "Transactions retrieved successfully", 200));
@@ -502,6 +502,89 @@ class TransactionService {
             balance,
             transactionCount: transactions.length,
         }, "Transaction summary retrieved successfully", 200));
+    }
+
+    static async getCalendarTransactions(req: Request, res: Response) {
+        try {
+            const user = req.user!;
+            const timezone = await resolveUserTimezone(req, user.id_user);
+            const { from, to, startDate, endDate, type, category, search, sort = "newest" } = req.query as any;
+
+            const filter: Record<string, any> = { user: user.id_user };
+
+            if (type && type !== "All") {
+                filter.type = new RegExp(`^${type}$`, "i");
+            }
+
+            if (category && category !== "all") {
+                filter.category = category;
+            }
+
+            if (search && String(search).trim()) {
+                filter.description = { $regex: String(search).trim(), $options: "i" };
+            }
+
+            const rawFrom = from || startDate;
+            const rawTo = to || endDate;
+
+            if (rawFrom && rawTo) {
+                const sStr = String(rawFrom).split("T")[0];
+                const eStr = String(rawTo).split("T")[0];
+                const s = fromZonedTime(new Date(`${sStr}T00:00:00.000`), timezone);
+                const e = fromZonedTime(new Date(`${eStr}T23:59:59.999`), timezone);
+                filter.$or = [
+                    { date: { $gte: s, $lte: e } },
+                    { date: { $exists: false }, createdAt: { $gte: s, $lte: e } },
+                ];
+            }
+
+            let sortOptions: Record<string, any> = { date: -1, createdAt: -1, _id: -1 };
+            if (sort === "oldest") {
+                sortOptions = { date: 1, createdAt: 1, _id: 1 };
+            } else if (sort === "highest") {
+                sortOptions = { amount: -1, date: -1, createdAt: -1, _id: -1 };
+            } else if (sort === "lowest") {
+                sortOptions = { amount: 1, date: 1, createdAt: 1, _id: 1 };
+            }
+
+            const rawTransactions = await TransactionModel
+                .find(filter)
+                .populate("category")
+                .populate("linkedIncomeId", "description amount date type")
+                .sort(sortOptions as any)
+                .lean();
+
+            const transactions = rawTransactions.map((t: any) => ({
+                ...t,
+                date: t.date || t.createdAt,
+            }));
+
+            let totalIncome = 0;
+            let totalExpense = 0;
+            for (const t of transactions) {
+                if (String(t.type || "").toLowerCase() === "income") {
+                    totalIncome += t.amount || 0;
+                } else {
+                    totalExpense += t.amount || 0;
+                }
+            }
+
+            return res.status(200).json(SuccessResponse({
+                items: transactions,
+                total: transactions.length,
+                from: rawFrom,
+                to: rawTo,
+                summary: {
+                    totalIncome,
+                    totalExpense,
+                    balance: totalIncome - totalExpense,
+                    count: transactions.length,
+                },
+            }, "Calendar transactions retrieved successfully", 200));
+        } catch (error) {
+            logger.error(error);
+            return res.status(500).json(ErrorResponse("Internal server error", (error as Error).message, 500));
+        }
     }
 
     static async handleN8nWebhook(req: Request, res: Response, session: mongoose.ClientSession) {

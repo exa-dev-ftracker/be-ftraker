@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "node dist/src/index.js",
-    "build": "tsc"
+    "build": "tsc",
+    "migrate:dates": "tsx src/migrations/fix_historical_transaction_dates.ts"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

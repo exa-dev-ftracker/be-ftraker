@@ -7,6 +7,9 @@ const router = Router();
 // Summary endpoint
 router.get("/transactions/summary", TransactionService.getTransactionSummary);
 
+// Calendar endpoint (from/to range)
+router.get("/transactions/calendar", TransactionService.getCalendarTransactions);
+
 // GET tanpa transaction → tidak perlu session
 router.get("/transactions", TransactionService.getTransactions);
 
