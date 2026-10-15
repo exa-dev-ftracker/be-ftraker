@@ -9,6 +9,7 @@ import { fromZonedTime } from "date-fns-tz";
 import { resolveUserTimezone } from "../../utils/timezone";
 import { ZodError } from "zod";
 import mongoose from "mongoose";
+import { isRequestCancelled } from "../../middleware/cancelContext";
 
 
 class TransactionService {
@@ -79,6 +80,8 @@ class TransactionService {
 
     static async getTransactions(req: Request, res: Response) {
         try {
+            if (isRequestCancelled(req, res)) return;
+
             validate(req.query, getTransactionQuerySchema);
 
             const user = req.user!;
@@ -110,9 +113,13 @@ class TransactionService {
                     skip = (pageNum - 1) * limitNum;
                 }
 
+                if (isRequestCancelled(req, res)) return;
+
                 const total = await TransactionModel.countDocuments(filter);
                 const totalPages = Math.ceil(total / limitNum);
                 const hasMore = skip + limitNum < total;
+
+                if (isRequestCancelled(req, res)) return;
 
                 const rawTransactions = await TransactionModel
                     .find(filter)
@@ -122,6 +129,8 @@ class TransactionService {
                     .skip(skip)
                     .limit(limitNum)
                     .lean();
+
+                if (isRequestCancelled(req, res)) return;
 
                 const transactions = rawTransactions.map((t: any) => ({
                     ...t,
@@ -141,12 +150,16 @@ class TransactionService {
                 }, "Transactions retrieved successfully", 200));
             }
 
+            if (isRequestCancelled(req, res)) return;
+
             const rawTransactions = await TransactionModel
                 .find(filter)
                 .populate("category")
                 .populate("linkedIncomeId", "description amount date type")
                 .sort(sortOptions as any)
                 .lean();
+
+            if (isRequestCancelled(req, res)) return;
 
             const transactions = rawTransactions.map((t: any) => ({
                 ...t,
@@ -156,6 +169,11 @@ class TransactionService {
             return res.status(200).json(SuccessResponse(transactions, "Transactions retrieved successfully", 200));
 
         } catch (error) {
+            if (isRequestCancelled(req, res) || (error as any)?.name === "AbortError") {
+                logger.info(`[CancelContext] getTransactions cancelled by client (${req.method} ${req.originalUrl})`);
+                return;
+            }
+
             logger.error(error);
 
             if (error instanceof ZodError) {
@@ -478,34 +496,52 @@ class TransactionService {
     }
 
     static async getTransactionSummary(req: Request, res: Response) {
-        const user = req.user!;
-        const filter = TransactionService.buildFilter(req.query, user.id_user);
-        const transactions = await TransactionModel.find(filter);
+        try {
+            if (isRequestCancelled(req, res)) return;
 
-        let incomeTotal = 0;
-        let expenseTotal = 0;
+            const user = req.user!;
+            const filter = TransactionService.buildFilter(req.query, user.id_user);
 
-        for (const t of transactions) {
-            const isIncome = t.type?.toLowerCase() === "income";
-            if (isIncome) {
-                incomeTotal += t.amount;
-            } else {
-                expenseTotal += t.amount;
+            if (isRequestCancelled(req, res)) return;
+
+            const transactions = await TransactionModel.find(filter).lean();
+
+            if (isRequestCancelled(req, res)) return;
+
+            let incomeTotal = 0;
+            let expenseTotal = 0;
+
+            for (const t of transactions) {
+                const isIncome = t.type?.toLowerCase() === "income";
+                if (isIncome) {
+                    incomeTotal += t.amount;
+                } else {
+                    expenseTotal += t.amount;
+                }
             }
+
+            const balance = incomeTotal - expenseTotal;
+
+            return res.status(200).json(SuccessResponse({
+                incomeTotal,
+                expenseTotal,
+                balance,
+                transactionCount: transactions.length,
+            }, "Transaction summary retrieved successfully", 200));
+        } catch (error) {
+            if (isRequestCancelled(req, res) || (error as any)?.name === "AbortError") {
+                logger.info(`[CancelContext] getTransactionSummary cancelled by client (${req.method} ${req.originalUrl})`);
+                return;
+            }
+            logger.error(error);
+            return res.status(500).json(ErrorResponse("Internal server error", (error as Error).message, 500));
         }
-
-        const balance = incomeTotal - expenseTotal;
-
-        return res.status(200).json(SuccessResponse({
-            incomeTotal,
-            expenseTotal,
-            balance,
-            transactionCount: transactions.length,
-        }, "Transaction summary retrieved successfully", 200));
     }
 
     static async getCalendarTransactions(req: Request, res: Response) {
         try {
+            if (isRequestCancelled(req, res)) return;
+
             const user = req.user!;
             const timezone = await resolveUserTimezone(req, user.id_user);
             const { from, to, startDate, endDate, type, category, search, sort = "newest" } = req.query as any;
@@ -547,12 +583,16 @@ class TransactionService {
                 sortOptions = { amount: 1, date: 1, createdAt: 1, _id: 1 };
             }
 
+            if (isRequestCancelled(req, res)) return;
+
             const rawTransactions = await TransactionModel
                 .find(filter)
                 .populate("category")
                 .populate("linkedIncomeId", "description amount date type")
                 .sort(sortOptions as any)
                 .lean();
+
+            if (isRequestCancelled(req, res)) return;
 
             const transactions = rawTransactions.map((t: any) => ({
                 ...t,
@@ -582,6 +622,10 @@ class TransactionService {
                 },
             }, "Calendar transactions retrieved successfully", 200));
         } catch (error) {
+            if (isRequestCancelled(req, res) || (error as any)?.name === "AbortError") {
+                logger.info(`[CancelContext] getCalendarTransactions cancelled by client (${req.method} ${req.originalUrl})`);
+                return;
+            }
             logger.error(error);
             return res.status(500).json(ErrorResponse("Internal server error", (error as Error).message, 500));
         }

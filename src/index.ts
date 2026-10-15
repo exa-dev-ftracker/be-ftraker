@@ -11,6 +11,7 @@ import DashboardRoutes from "./modules/dashboard/dashboardRoutes";
 import { logRouting } from "./middleware/logrouting";
 import { logRequest } from "./middleware/logrequest";
 import { validateToken } from "./middleware/validateToken";
+import { cancelContextMiddleware } from "./middleware/cancelContext";
 import Config from "./config";
 
 dotenv.config();
@@ -20,6 +21,7 @@ const app = express();
 // middlewares
 app.use(cors());
 app.use(express.json());
+app.use(cancelContextMiddleware);
 
 // log request
 app.use(logRequest);
