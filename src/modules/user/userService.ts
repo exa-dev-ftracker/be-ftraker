@@ -132,21 +132,52 @@ class UserService {
 
     static async loginWithGoogle(req: Request, res: Response, session: mongoose.ClientSession) {
         validate(req.body, loginWithGoogleBodySchema);
-        const {credential} = req.body;
+        const {credential, code} = req.body;
 
         const clientRedis = await getClientRedis();
         if (!clientRedis) {
             return res.status(500).json(ErrorResponse("Redis connection error", null, 500));
         }
 
-        const client = new OAuth2Client(Config.GOOGLE_CLIENT_ID);
+        let email = "";
+        let email_verified = true;
+        let googleName = "";
+        let googleId = "";
 
-        const ticket = await client.verifyIdToken({
-            idToken: credential,
-            audience: Config.GOOGLE_CLIENT_ID
-        });
+        const client = new OAuth2Client(
+            Config.GOOGLE_CLIENT_ID,
+            Config.GOOGLE_CLIENT_SECRET,
+            "postmessage"
+        );
 
-        const {email, email_verified, name: googleName, sub: googleId} = ticket.getPayload() as any;
+        if (code) {
+            const { tokens } = await client.getToken(code);
+            if (tokens.id_token) {
+                const ticket = await client.verifyIdToken({
+                    idToken: tokens.id_token,
+                    audience: Config.GOOGLE_CLIENT_ID,
+                });
+                const payload = ticket.getPayload() as any;
+                email = payload?.email || "";
+                email_verified = payload?.email_verified ?? true;
+                googleId = payload?.sub || "";
+                googleName = payload?.name || "";
+            }
+        } else if (credential) {
+            const ticket = await client.verifyIdToken({
+                idToken: credential,
+                audience: Config.GOOGLE_CLIENT_ID
+            });
+            const payload = ticket.getPayload() as any;
+            email = payload?.email || "";
+            email_verified = payload?.email_verified ?? true;
+            googleId = payload?.sub || "";
+            googleName = payload?.name || "";
+        }
+
+        if (!googleId && !email) {
+            return res.status(400).json(ErrorResponse("Failed to verify Google identity", null, 400));
+        }
 
         if (!email_verified) {
             return res.status(400).json(ErrorResponse("Email not verified", null, 400));

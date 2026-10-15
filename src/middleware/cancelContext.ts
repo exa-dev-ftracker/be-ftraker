@@ -21,27 +21,23 @@ export const cancelContextMiddleware = (req: Request, res: Response, next: NextF
     req.cancelSignal = controller.signal;
 
     const onAbort = () => {
-        if (!res.writableEnded && !res.headersSent) {
+        if (!res.writableEnded) {
             isCancelled = true;
             controller.abort();
             logger.info(`[CancelContext] Request aborted by client: ${req.method} ${req.originalUrl}`);
         }
     };
 
-    req.on("close", () => {
-        if (!res.writableEnded && !res.headersSent) {
-            onAbort();
-        }
-    });
-
+    // In Node.js / Express, premature client disconnection is detected on the response stream closing
+    res.on("close", onAbort);
     req.on("aborted", onAbort);
 
     req.isClientCancelled = () => {
-        return isCancelled || req.destroyed || Boolean((req as any).signal?.aborted) || res.writableEnded || res.headersSent;
+        return isCancelled || Boolean(req.cancelSignal?.aborted);
     };
 
     res.on("finish", () => {
-        req.off("close", onAbort);
+        res.off("close", onAbort);
         req.off("aborted", onAbort);
     });
 
@@ -52,10 +48,7 @@ export const isRequestCancelled = (req: Request, res?: Response): boolean => {
     if (req.isClientCancelled && req.isClientCancelled()) {
         return true;
     }
-    if (req.destroyed || Boolean((req as any).signal?.aborted)) {
-        return true;
-    }
-    if (res && (res.writableEnded || res.headersSent)) {
+    if (Boolean(req.cancelSignal?.aborted)) {
         return true;
     }
     return false;
