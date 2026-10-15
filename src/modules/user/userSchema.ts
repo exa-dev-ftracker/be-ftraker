@@ -12,11 +12,8 @@ export const registerBodySchema = zod.object({
 })
 
 export const loginWithGoogleBodySchema = zod.object({
-    credential: zod.string().optional(),
-    code: zod.string().optional(),
-}).refine((data) => Boolean(data.credential || data.code), {
-    message: "Either credential or code is required",
-});
+    credential: zod.jwt("Invalid JWT format"),
+})
 
 export const loginWithAppleBodySchema = zod.object({
     identityToken: zod.string().optional(),
